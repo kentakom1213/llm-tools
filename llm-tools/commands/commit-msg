@@ -5,20 +5,152 @@ script_dir="${0:A:h}"
 LLM_TOOLS_HOME="${LLM_TOOLS_HOME:-${script_dir:h}}"
 source "$LLM_TOOLS_HOME/lib/common.zsh"
 
-model="${OLLAMA_MODEL:-gemma4:e4b}"
+config_file="${LLM_TOOLS_CONFIG:-${XDG_CONFIG_HOME:-${HOME:-}/.config}/llm-tools/config.toml}"
+model="gemma4:e2b"
 debug=0
-max_diff_lines="${LLM_TOOLS_MAX_DIFF_LINES:-120}"
-name_only_lines="${LLM_TOOLS_NAME_ONLY_LINES:-2000}"
+max_diff_lines=120
+name_only_lines=2000
 full_diff=0
 retry=0
+typeset -a ollama_parameters
+
+trim_value () {
+	local value="$1"
+
+	value="${value#"${value%%[![:space:]]*}"}"
+	value="${value%"${value##*[![:space:]]}"}"
+	print -r -- "$value"
+}
+
+strip_toml_comment () {
+	local line="$1"
+	local output="" quote="" char previous=""
+	local i
+
+	for (( i = 1; i <= ${#line}; i++ ))
+	do
+		char="${line[i]}"
+
+		if [[ -z "$quote" && "$char" == "#" ]]
+		then
+			break
+		fi
+
+		output+="$char"
+
+		if [[ "$char" == '"' && "$previous" != "\\" && "$quote" != "'" ]]
+		then
+			if [[ "$quote" == '"' ]]
+			then
+				quote=""
+			else
+				quote='"'
+			fi
+		elif [[ "$char" == "'" && "$quote" != '"' ]]
+		then
+			if [[ "$quote" == "'" ]]
+			then
+				quote=""
+			else
+				quote="'"
+			fi
+		fi
+
+		previous="$char"
+	done
+
+	trim_value "$output"
+}
+
+unquote_toml_value () {
+	local value="$1"
+
+	if [[ "$value" == \"*\" && "$value" == *\" ]]
+	then
+		value="${value[2,-2]}"
+	elif [[ "$value" == \'*\' && "$value" == *\' ]]
+	then
+		value="${value[2,-2]}"
+	fi
+
+	print -r -- "$value"
+}
+
+load_commit_msg_config () {
+	local file="$1"
+	local section="" line key value parameter_key
+
+	[[ -f "$file" ]] || return 0
+
+	while IFS= read -r line || [[ -n "$line" ]]
+	do
+		line="$(strip_toml_comment "$line")"
+		[[ -n "$line" ]] || continue
+
+		if [[ "$line" == \[*\] ]]
+		then
+			section="${line[2,-2]}"
+			continue
+		fi
+
+		[[ "$line" == *=* ]] || continue
+		key="$(trim_value "${line%%=*}")"
+		value="$(trim_value "${line#*=}")"
+		value="$(unquote_toml_value "$value")"
+
+		case "$section:$key" in
+			(commit-msg:model)
+				model="$value"
+				;;
+			(commit-msg:max_diff_lines | commit-msg:max-diff-lines)
+				max_diff_lines="$value"
+				;;
+			(commit-msg:name_only_lines | commit-msg:name-only-lines)
+				name_only_lines="$value"
+				;;
+			(commit-msg:temperature)
+				ollama_parameters+=( "temperature=$value" )
+				;;
+			(commit-msg:top_p | commit-msg:top-p)
+				ollama_parameters+=( "top_p=$value" )
+				;;
+			(commit-msg:top_k | commit-msg:top-k)
+				ollama_parameters+=( "top_k=$value" )
+				;;
+			(commit-msg:seed)
+				ollama_parameters+=( "seed=$value" )
+				;;
+			(commit-msg:num_ctx | commit-msg:num-ctx)
+				ollama_parameters+=( "num_ctx=$value" )
+				;;
+			(commit-msg.parameters:*)
+				parameter_key="${key//-/_}"
+				ollama_parameters+=( "$parameter_key=$value" )
+				;;
+		esac
+	done < "$file"
+}
+
+load_commit_msg_config "$config_file"
+
+model="${OLLAMA_MODEL:-$model}"
+max_diff_lines="${LLM_TOOLS_MAX_DIFF_LINES:-$max_diff_lines}"
+name_only_lines="${LLM_TOOLS_NAME_ONLY_LINES:-$name_only_lines}"
 
 usage () {
 	cat <<'EOF'
 Usage:
-  llm-tools commit-msg [-m MODEL] [--max-diff-lines N] [--name-only-lines N] [--full-diff] [--retry] [--debug]
+  llm-tools commit-msg [-m MODEL] [--temperature N] [--top-p N] [--top-k N] [--seed N] [--num-ctx N] [--ollama-parameter KEY=VALUE] [--max-diff-lines N] [--name-only-lines N] [--full-diff] [--retry] [--debug]
 
 Options:
   -m, --model MODEL       set Ollama model
+  --temperature N         set Ollama temperature parameter
+  --top-p N               set Ollama top_p parameter
+  --top-k N               set Ollama top_k parameter
+  --seed N                set Ollama seed parameter
+  --num-ctx N             set Ollama num_ctx parameter
+  --ollama-parameter KEY=VALUE
+                          set an arbitrary Ollama model parameter
   --max-diff-lines N      limit staged diff lines sent to Ollama
   --name-only-lines N     use file names only when changed lines exceed N; 0 disables
   --full-diff             send the full staged diff
@@ -36,6 +168,42 @@ do
 			shift
 			(( $# > 0 )) || die "missing value for --model" 2
 			model="$1"
+			shift
+			;;
+		(--temperature)
+			shift
+			(( $# > 0 )) || die "missing value for --temperature" 2
+			ollama_parameters+=( "temperature=$1" )
+			shift
+			;;
+		(--top-p)
+			shift
+			(( $# > 0 )) || die "missing value for --top-p" 2
+			ollama_parameters+=( "top_p=$1" )
+			shift
+			;;
+		(--top-k)
+			shift
+			(( $# > 0 )) || die "missing value for --top-k" 2
+			ollama_parameters+=( "top_k=$1" )
+			shift
+			;;
+		(--seed)
+			shift
+			(( $# > 0 )) || die "missing value for --seed" 2
+			ollama_parameters+=( "seed=$1" )
+			shift
+			;;
+		(--num-ctx)
+			shift
+			(( $# > 0 )) || die "missing value for --num-ctx" 2
+			ollama_parameters+=( "num_ctx=$1" )
+			shift
+			;;
+		(--ollama-parameter)
+			shift
+			(( $# > 0 )) || die "missing value for --ollama-parameter" 2
+			ollama_parameters+=( "$1" )
 			shift
 			;;
 		(--max-diff-lines)
@@ -88,7 +256,17 @@ done
 require_command git
 require_command ollama
 
+[[ "$max_diff_lines" == <-> ]] || die "invalid value for LLM_TOOLS_MAX_DIFF_LINES: $max_diff_lines" 2
 [[ "$name_only_lines" == <-> ]] || die "invalid value for LLM_TOOLS_NAME_ONLY_LINES: $name_only_lines" 2
+
+for parameter in "${ollama_parameters[@]}"
+do
+	[[ "$parameter" == *=* ]] || die "invalid Ollama parameter: $parameter" 2
+	key="${parameter%%=*}"
+	value="${parameter#*=}"
+	[[ "$key" == [A-Za-z_][A-Za-z0-9_]* ]] || die "invalid Ollama parameter name: $key" 2
+	[[ -n "$value" ]] || die "missing value for Ollama parameter: $key" 2
+done
 
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 || {
 	die "commit-msg: not inside a git repository"
@@ -234,9 +412,32 @@ $context
 EOF
 }
 
+run_commit_model () {
+	local model="$1"
+	local parameter key value
+	typeset -a parameter_commands
+
+	for parameter in "${ollama_parameters[@]}"
+	do
+		key="${parameter%%=*}"
+		value="${parameter#*=}"
+		parameter_commands+=( "/set parameter $key $value" )
+	done
+
+	if (( ${#parameter_commands[@]} > 0 ))
+	then
+		{
+			printf "%s\n" "${parameter_commands[@]}"
+			cat
+		} | run_ollama "$model"
+	else
+		run_ollama "$model"
+	fi
+}
+
 output="$(
 	printf "%s\n\n%s\n" "$prompt" "$context" |
-		run_ollama "$model"
+		run_commit_model "$model"
 )"
 
 if (( debug ))
@@ -254,7 +455,7 @@ then
 else
 	repair_output="$(
 		repair_invalid_output "$output" |
-			run_ollama "$model"
+			run_commit_model "$model"
 	)"
 
 	if (( debug ))
@@ -282,7 +483,7 @@ else
 	retry_output="$(
 		printf "%s\n\nThe previous outputs were invalid:\n%s\n\n%s\n\n%s\n" \
 			"$prompt" "$output" "$repair_output" "$context" |
-			run_ollama "$model"
+			run_commit_model "$model"
 	)"
 
 	if (( debug ))

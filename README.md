@@ -59,13 +59,20 @@ llm-tools commit-msg
 ```
 
 このサブコマンドは `git` と `ollama` を利用します，
-既定のモデルは `gemma4:e4b` です，
+既定のモデルは `gemma4:e2b` です，
+設定ファイルは `${XDG_CONFIG_HOME:-$HOME/.config}/llm-tools/config.toml` から読み込まれます，
 
 主なオプションは次の通りです，
 
 | オプション | 説明 |
 | --- | --- |
 | `-m, --model MODEL` | 利用する Ollama モデルを指定します |
+| `--temperature N` | Ollama の `temperature` パラメータを指定します |
+| `--top-p N` | Ollama の `top_p` パラメータを指定します |
+| `--top-k N` | Ollama の `top_k` パラメータを指定します |
+| `--seed N` | Ollama の `seed` パラメータを指定します |
+| `--num-ctx N` | Ollama の `num_ctx` パラメータを指定します |
+| `--ollama-parameter KEY=VALUE` | 任意の Ollama モデルパラメータを指定します |
 | `--max-diff-lines N` | Ollama に渡す staged diff の最大行数を指定します |
 | `--full-diff` | staged diff 全体を Ollama に渡します |
 | `--retry` | 自動整形も失敗した場合に 1 回だけ追加で再試行します |
@@ -75,7 +82,26 @@ llm-tools commit-msg
 
 ```console
 llm-tools commit-msg --model qwen2.5-coder:7b --max-diff-lines 200
+llm-tools commit-msg --temperature 0 --top-p 0.2 --seed 1
+llm-tools commit-msg --ollama-parameter repeat_penalty=1.1
 ```
+
+設定例，
+
+```toml
+[commit-msg]
+model = "gemma4:e2b"
+max_diff_lines = 120
+name_only_lines = 2000
+temperature = 0
+top_p = 0.2
+seed = 1
+
+[commit-msg.parameters]
+repeat_penalty = 1.1
+```
+
+設定値は `組み込み既定値 < TOML < 環境変数 < CLI 引数` の順に上書きされます，
 
 生成されるメッセージの type は，次のいずれかです，
 
@@ -88,6 +114,7 @@ feat, fix, docs, style, refactor, test, chore, build, ci, perf
 | 変数 | 説明 |
 | --- | --- |
 | `LLM_TOOLS_HOME` | `llm-tools` 本体のディレクトリを上書きします |
+| `LLM_TOOLS_CONFIG` | `llm-tools` の TOML 設定ファイルを上書きします |
 | `OLLAMA_MODEL` | `commit-msg` で利用する既定の Ollama モデルを上書きします |
 | `LLM_TOOLS_MAX_DIFF_LINES` | `commit-msg` で Ollama に渡す staged diff の既定最大行数を上書きします |
 
