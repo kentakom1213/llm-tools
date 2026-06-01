@@ -60,7 +60,7 @@ llm-tools commit-msg
 ```
 
 このサブコマンドは `git` と `ollama` を利用します，
-既定のモデルは `gemma4:e2b` です，
+利用するモデルは設定ファイルまたは `OLLAMA_MODEL` で指定します，
 設定ファイルは `${XDG_CONFIG_HOME:-$HOME/.config}/llm-tools/config.toml` から読み込まれます，
 
 主なオプションは次の通りです，
@@ -75,6 +75,9 @@ llm-tools commit-msg
 | `--num-ctx N` | Ollama の `num_ctx` パラメータを指定します |
 | `--ollama-parameter KEY=VALUE` | 任意の Ollama モデルパラメータを指定します |
 | `--max-diff-lines N` | Ollama に渡す staged diff の最大行数を指定します |
+| `--large-change-lines N` | 二段階生成に切り替える変更行数を指定します |
+| `--huge-change-lines N` | 巨大変更の機械要約に切り替える変更行数を指定します |
+| `--huge-change-files N` | 巨大変更の機械要約に切り替える変更ファイル数を指定します |
 | `--full-diff` | staged diff 全体を Ollama に渡します |
 | `--retry` | 自動整形も失敗した場合に 1 回だけ追加で再試行します |
 | `--debug` | モデルの生出力を stderr に表示します |
@@ -93,15 +96,19 @@ llm-tools commit-msg --ollama-parameter repeat_penalty=1.1
 [commit-msg]
 model = "gemma4:e2b"
 max_diff_lines = 120
-name_only_lines = 2000
+large_change_lines = 800
+huge_change_lines = 3000
+huge_change_files = 300
 temperature = 0
-top_p = 0.2
 seed = 1
+num_ctx = 8192
 
 [commit-msg.parameters]
 repeat_penalty = 1.1
 ```
 
+`[commit-msg].model` は必須です，
+ただし `OLLAMA_MODEL` を指定した場合は設定ファイルの `model` を省略できます，
 設定値は `組み込み既定値 < TOML < 環境変数 < CLI 引数` の順に上書きされます，
 
 生成されるメッセージの type は，次のいずれかです，
@@ -145,7 +152,7 @@ repeat_penalty = 1.1
 | --- | --- |
 | `LLM_TOOLS_HOME` | `llm-tools` 本体のディレクトリを上書きします |
 | `LLM_TOOLS_CONFIG` | `llm-tools` の TOML 設定ファイルを上書きします |
-| `OLLAMA_MODEL` | `commit-msg` で利用する既定の Ollama モデルを上書きします |
+| `OLLAMA_MODEL` | `commit-msg` / `pr-msg` で利用する Ollama モデルを上書きします |
 | `LLM_TOOLS_MAX_DIFF_LINES` | `commit-msg` / `pr-msg` で Ollama に渡す diff の既定最大行数を上書きします |
 | `LLM_TOOLS_NAME_ONLY_LINES` | `commit-msg` / `pr-msg` でファイル名のみへ切り替える変更行数を上書きします |
 

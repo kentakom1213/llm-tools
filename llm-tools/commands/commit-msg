@@ -13,7 +13,7 @@ apply_git_message_env
 usage () {
 	cat <<'EOF'
 Usage:
-  llm-tools commit-msg [-m MODEL] [--temperature N] [--top-p N] [--top-k N] [--seed N] [--num-ctx N] [--ollama-parameter KEY=VALUE] [--max-diff-lines N] [--name-only-lines N] [--full-diff] [--retry] [--debug]
+  llm-tools commit-msg [-m MODEL] [--temperature N] [--top-p N] [--top-k N] [--seed N] [--num-ctx N] [--ollama-parameter KEY=VALUE] [--max-diff-lines N] [--large-change-lines N] [--huge-change-lines N] [--huge-change-files N] [--full-diff] [--retry] [--debug]
 
 Options:
   -m, --model MODEL       set Ollama model
@@ -25,7 +25,9 @@ Options:
   --ollama-parameter KEY=VALUE
                           set an arbitrary Ollama model parameter
   --max-diff-lines N      limit staged diff lines sent to Ollama
-  --name-only-lines N     use file names only when changed lines exceed N; 0 disables
+  --large-change-lines N  use two-stage generation when changed lines exceed N
+  --huge-change-lines N   use deterministic huge summary when changed lines exceed N
+  --huge-change-files N   use deterministic huge summary when changed files exceed N
   --full-diff             send the full staged diff
   --retry                 retry once when automatic repair also fails
   --debug                 print raw model output to stderr
@@ -60,6 +62,7 @@ do
 	esac
 done
 
+require_git_message_model_config "$command_name"
 validate_git_message_options
 
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 || {
@@ -95,6 +98,7 @@ Staged diff:
 $git_diff
 EOF
 )"
+change_size="$(classify_change_size)"
 
 extract_msg () {
 	sed 's/^[[:space:]]*//; s/[[:space:]]*$//' |
@@ -104,30 +108,64 @@ extract_msg () {
 }
 
 repair_invalid_output () {
-	local invalid_output="$1"
+	local source_context="$1"
 
 	cat <<EOF
-The previous model output was invalid because it was not exactly one Conventional Commit message.
+TASK:
+The previous output was invalid.
+Regenerate one Conventional Commit message from the Git summary below.
 
-Convert it into exactly one valid commit message.
-Use the git context only to resolve ambiguity.
-Return exactly one line and nothing else.
-The first token must be one of: feat, fix, docs, style, refactor, test, chore, build, ci, perf.
+GIT SUMMARY:
+$source_context
 
-Invalid output:
-$invalid_output
-
-$context
+FINAL INSTRUCTION:
+Return exactly one valid Conventional Commit message and nothing else.
+Do not summarize the input.
+Do not ask a question.
 EOF
 }
 
-output="$(
-	printf "%s\n\n%s\n" "$prompt" "$context" |
-		run_git_message_model "$model"
-)"
+case "$change_size" in
+	(normal)
+		generation_context="$context"
+		output="$(
+			build_commit_prompt "$prompt" "$context" |
+				run_git_message_model "$model"
+		)"
+		;;
+	(large)
+		summary="$(
+			build_summary_prompt "$context" |
+				run_git_message_model "$model"
+		)"
+		generation_context="$summary"
+		output="$(
+			build_message_from_summary_prompt "$summary" |
+				run_git_message_model "$model"
+		)"
+		;;
+	(huge)
+		summary="$(build_huge_summary)"
+		generation_context="$summary"
+		output="$(
+			build_message_from_summary_prompt "$summary" |
+				run_git_message_model "$model"
+		)"
+		;;
+	(*)
+		die "commit-msg: internal error: unknown change size: $change_size"
+		;;
+esac
 
 if (( debug ))
 then
+	print -ru2 -- "----- commit-msg mode -----"
+	print -ru2 -- "$change_size"
+	if [[ "${summary:-}" != "" ]]
+	then
+		print -ru2 -- "----- generated summary -----"
+		print -ru2 -- "$summary"
+	fi
 	print -ru2 -- "----- raw ollama output -----"
 	print -ru2 -- "$output"
 	print -ru2 -- "-----------------------------"
@@ -140,7 +178,7 @@ then
 	print -- "$msg"
 else
 	repair_output="$(
-		repair_invalid_output "$output" |
+		repair_invalid_output "$generation_context" |
 			run_git_message_model "$model"
 	)"
 
@@ -167,8 +205,7 @@ else
 	fi
 
 	retry_output="$(
-		printf "%s\n\nThe previous outputs were invalid:\n%s\n\n%s\n\n%s\n" \
-			"$prompt" "$output" "$repair_output" "$context" |
+		repair_invalid_output "$generation_context" |
 			run_git_message_model "$model"
 	)"
 

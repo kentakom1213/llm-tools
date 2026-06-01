@@ -1,0 +1,17 @@
+[commit-msg]
+model = "qwen2.5-coder:7b"
+max_diff_lines = 120
+large_change_lines = 800
+huge_change_lines = 3000
+huge_change_files = 300
+temperature = 0
+seed = 1
+num_ctx = 8192
+
+[pr-msg]
+model = "qwen2.5-coder:7b"
+max_diff_lines = 300
+name_only_lines = 3000
+temperature = 0
+seed = 1
+num_ctx = 8192
