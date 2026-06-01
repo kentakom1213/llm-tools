@@ -11,7 +11,9 @@ num_ctx = 8192
 [pr-msg]
 model = "qwen2.5-coder:7b"
 max_diff_lines = 300
-name_only_lines = 3000
+large_change_lines = 1000
+huge_change_lines = 5000
+huge_change_files = 500
 temperature = 0
 seed = 1
 num_ctx = 8192

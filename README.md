@@ -138,13 +138,19 @@ base は `origin/HEAD`，`origin/main`，`main`，`origin/master`，`master` の
 [pr-msg]
 model = "gemma4:e2b"
 max_diff_lines = 300
-name_only_lines = 3000
+large_change_lines = 1000
+huge_change_lines = 5000
+huge_change_files = 500
 temperature = 0
-top_p = 0.2
+seed = 1
+num_ctx = 8192
 
 [pr-msg.parameters]
 repeat_penalty = 1.1
 ```
+
+`[pr-msg].model` も必須です，
+ただし `OLLAMA_MODEL` を指定した場合は設定ファイルの `model` を省略できます，
 
 ## 環境変数
 

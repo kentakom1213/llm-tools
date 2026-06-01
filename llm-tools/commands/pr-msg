@@ -14,7 +14,7 @@ apply_git_message_env
 usage () {
 	cat <<'EOF'
 Usage:
-  llm-tools pr-msg [--base REF] [-m MODEL] [--temperature N] [--top-p N] [--top-k N] [--seed N] [--num-ctx N] [--ollama-parameter KEY=VALUE] [--max-diff-lines N] [--name-only-lines N] [--full-diff] [--retry] [--debug]
+  llm-tools pr-msg [--base REF] [-m MODEL] [--temperature N] [--top-p N] [--top-k N] [--seed N] [--num-ctx N] [--ollama-parameter KEY=VALUE] [--max-diff-lines N] [--large-change-lines N] [--huge-change-lines N] [--huge-change-files N] [--full-diff] [--retry] [--debug]
 
 Options:
   --base REF             compare changes against REF; defaults to origin/HEAD, origin/main, main, origin/master, then master
@@ -27,7 +27,9 @@ Options:
   --ollama-parameter KEY=VALUE
                          set an arbitrary Ollama model parameter
   --max-diff-lines N     limit diff lines sent to Ollama
-  --name-only-lines N    use file names only when changed lines exceed N; 0 disables
+  --large-change-lines N use two-stage generation when changed lines exceed N
+  --huge-change-lines N  use deterministic huge summary when changed lines exceed N
+  --huge-change-files N  use deterministic huge summary when changed files exceed N
   --full-diff            send the full diff
   --retry                retry once when automatic repair also fails
   --debug                print raw model output to stderr
@@ -147,6 +149,7 @@ Diff:
 $git_diff
 EOF
 )"
+change_size="$(classify_change_size)"
 
 extract_msg () {
 	awk '
@@ -181,12 +184,17 @@ is_valid_msg () {
 }
 
 repair_invalid_output () {
-	local invalid_output="$1"
+	local source_context="$1"
 
 	cat <<EOF
-The previous model output was invalid because it was not exactly one pull request title and body.
+TASK:
+The previous output was invalid.
+Regenerate one pull request title and body from the Git summary below.
 
-Convert it into exactly this format:
+GIT SUMMARY:
+$source_context
+
+OUTPUT FORMAT:
 
 Title: <short title>
 Body:
@@ -196,22 +204,63 @@ Body:
 ## Testing
 - <test or "Not run (not shown in diff)">
 
-Return the pull request message and nothing else.
-
-Invalid output:
-$invalid_output
-
-$context
+FINAL INSTRUCTION:
+Return exactly one pull request title and body in the output format and nothing else.
+Do not use Markdown fences.
+Do not ask a question.
 EOF
 }
 
-output="$(
-	printf "%s\n\n%s\n" "$prompt" "$context" |
-		run_git_message_model "$model"
-)"
+case "$change_size" in
+	(normal)
+		generation_context="$context"
+		output="$(
+			build_pr_prompt "$prompt" "$context" |
+				run_git_message_model "$model"
+		)"
+		;;
+	(large)
+		summary="$(
+			build_pr_summary_prompt "$context" |
+				run_git_message_model "$model"
+		)"
+		generation_context="$summary"
+		output="$(
+			build_pr_message_from_summary_prompt "$summary" |
+				run_git_message_model "$model"
+		)"
+		;;
+	(huge)
+		huge_summary="$(build_huge_summary)"
+		summary="$(
+			build_pr_summary_prompt "$huge_summary" |
+				run_git_message_model "$model"
+		)"
+		generation_context="$summary"
+		output="$(
+			build_pr_message_from_summary_prompt "$summary" |
+				run_git_message_model "$model"
+		)"
+		;;
+	(*)
+		die "pr-msg: internal error: unknown change size: $change_size"
+		;;
+esac
 
 if (( debug ))
 then
+	print -ru2 -- "----- pr-msg mode -----"
+	print -ru2 -- "$change_size"
+	if [[ "${huge_summary:-}" != "" ]]
+	then
+		print -ru2 -- "----- huge summary -----"
+		print -ru2 -- "$huge_summary"
+	fi
+	if [[ "${summary:-}" != "" ]]
+	then
+		print -ru2 -- "----- generated summary -----"
+		print -ru2 -- "$summary"
+	fi
 	print -ru2 -- "----- raw ollama output -----"
 	print -ru2 -- "$output"
 	print -ru2 -- "-----------------------------"
@@ -224,7 +273,7 @@ then
 	print -- "$msg"
 else
 	repair_output="$(
-		repair_invalid_output "$output" |
+		repair_invalid_output "$generation_context" |
 			run_git_message_model "$model"
 	)"
 
@@ -251,8 +300,7 @@ else
 	fi
 
 	retry_output="$(
-		printf "%s\n\nThe previous outputs were invalid:\n%s\n\n%s\n\n%s\n" \
-			"$prompt" "$output" "$repair_output" "$context" |
+		repair_invalid_output "$generation_context" |
 			run_git_message_model "$model"
 	)"
 
