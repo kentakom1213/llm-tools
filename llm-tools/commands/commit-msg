@@ -4,138 +4,11 @@ set -euo pipefail
 script_dir="${0:A:h}"
 LLM_TOOLS_HOME="${LLM_TOOLS_HOME:-${script_dir:h}}"
 source "$LLM_TOOLS_HOME/lib/common.zsh"
+source "$LLM_TOOLS_HOME/lib/git-message.zsh"
 
-config_file="${LLM_TOOLS_CONFIG:-${XDG_CONFIG_HOME:-${HOME:-}/.config}/llm-tools/config.toml}"
-model="gemma4:e2b"
-debug=0
-max_diff_lines=120
-name_only_lines=2000
-full_diff=0
-retry=0
-typeset -a ollama_parameters
-
-trim_value () {
-	local value="$1"
-
-	value="${value#"${value%%[![:space:]]*}"}"
-	value="${value%"${value##*[![:space:]]}"}"
-	print -r -- "$value"
-}
-
-strip_toml_comment () {
-	local line="$1"
-	local output="" quote="" char previous=""
-	local i
-
-	for (( i = 1; i <= ${#line}; i++ ))
-	do
-		char="${line[i]}"
-
-		if [[ -z "$quote" && "$char" == "#" ]]
-		then
-			break
-		fi
-
-		output+="$char"
-
-		if [[ "$char" == '"' && "$previous" != "\\" && "$quote" != "'" ]]
-		then
-			if [[ "$quote" == '"' ]]
-			then
-				quote=""
-			else
-				quote='"'
-			fi
-		elif [[ "$char" == "'" && "$quote" != '"' ]]
-		then
-			if [[ "$quote" == "'" ]]
-			then
-				quote=""
-			else
-				quote="'"
-			fi
-		fi
-
-		previous="$char"
-	done
-
-	trim_value "$output"
-}
-
-unquote_toml_value () {
-	local value="$1"
-
-	if [[ "$value" == \"*\" && "$value" == *\" ]]
-	then
-		value="${value[2,-2]}"
-	elif [[ "$value" == \'*\' && "$value" == *\' ]]
-	then
-		value="${value[2,-2]}"
-	fi
-
-	print -r -- "$value"
-}
-
-load_commit_msg_config () {
-	local file="$1"
-	local section="" line key value parameter_key
-
-	[[ -f "$file" ]] || return 0
-
-	while IFS= read -r line || [[ -n "$line" ]]
-	do
-		line="$(strip_toml_comment "$line")"
-		[[ -n "$line" ]] || continue
-
-		if [[ "$line" == \[*\] ]]
-		then
-			section="${line[2,-2]}"
-			continue
-		fi
-
-		[[ "$line" == *=* ]] || continue
-		key="$(trim_value "${line%%=*}")"
-		value="$(trim_value "${line#*=}")"
-		value="$(unquote_toml_value "$value")"
-
-		case "$section:$key" in
-			(commit-msg:model)
-				model="$value"
-				;;
-			(commit-msg:max_diff_lines | commit-msg:max-diff-lines)
-				max_diff_lines="$value"
-				;;
-			(commit-msg:name_only_lines | commit-msg:name-only-lines)
-				name_only_lines="$value"
-				;;
-			(commit-msg:temperature)
-				ollama_parameters+=( "temperature=$value" )
-				;;
-			(commit-msg:top_p | commit-msg:top-p)
-				ollama_parameters+=( "top_p=$value" )
-				;;
-			(commit-msg:top_k | commit-msg:top-k)
-				ollama_parameters+=( "top_k=$value" )
-				;;
-			(commit-msg:seed)
-				ollama_parameters+=( "seed=$value" )
-				;;
-			(commit-msg:num_ctx | commit-msg:num-ctx)
-				ollama_parameters+=( "num_ctx=$value" )
-				;;
-			(commit-msg.parameters:*)
-				parameter_key="${key//-/_}"
-				ollama_parameters+=( "$parameter_key=$value" )
-				;;
-		esac
-	done < "$file"
-}
-
-load_commit_msg_config "$config_file"
-
-model="${OLLAMA_MODEL:-$model}"
-max_diff_lines="${LLM_TOOLS_MAX_DIFF_LINES:-$max_diff_lines}"
-name_only_lines="${LLM_TOOLS_NAME_ONLY_LINES:-$name_only_lines}"
+command_name="commit-msg"
+load_git_message_config "$command_name" "$config_file"
+apply_git_message_env
 
 usage () {
 	cat <<'EOF'
@@ -164,74 +37,6 @@ EOF
 while (( $# > 0 ))
 do
 	case "${1:-}" in
-		(-m | --model)
-			shift
-			(( $# > 0 )) || die "missing value for --model" 2
-			model="$1"
-			shift
-			;;
-		(--temperature)
-			shift
-			(( $# > 0 )) || die "missing value for --temperature" 2
-			ollama_parameters+=( "temperature=$1" )
-			shift
-			;;
-		(--top-p)
-			shift
-			(( $# > 0 )) || die "missing value for --top-p" 2
-			ollama_parameters+=( "top_p=$1" )
-			shift
-			;;
-		(--top-k)
-			shift
-			(( $# > 0 )) || die "missing value for --top-k" 2
-			ollama_parameters+=( "top_k=$1" )
-			shift
-			;;
-		(--seed)
-			shift
-			(( $# > 0 )) || die "missing value for --seed" 2
-			ollama_parameters+=( "seed=$1" )
-			shift
-			;;
-		(--num-ctx)
-			shift
-			(( $# > 0 )) || die "missing value for --num-ctx" 2
-			ollama_parameters+=( "num_ctx=$1" )
-			shift
-			;;
-		(--ollama-parameter)
-			shift
-			(( $# > 0 )) || die "missing value for --ollama-parameter" 2
-			ollama_parameters+=( "$1" )
-			shift
-			;;
-		(--max-diff-lines)
-			shift
-			(( $# > 0 )) || die "missing value for --max-diff-lines" 2
-			[[ "$1" == <-> ]] || die "invalid value for --max-diff-lines: $1" 2
-			max_diff_lines="$1"
-			shift
-			;;
-		(--name-only-lines)
-			shift
-			(( $# > 0 )) || die "missing value for --name-only-lines" 2
-			[[ "$1" == <-> ]] || die "invalid value for --name-only-lines: $1" 2
-			name_only_lines="$1"
-			shift
-			;;
-		(--full-diff)
-			full_diff=1
-			shift
-			;;
-		(--retry)
-			retry=1
-			shift
-			;;
-		(--debug)
-			debug=1
-			shift
-			;;
 		(-h | --help)
 			usage
 			exit 0
@@ -245,7 +50,9 @@ do
 			break
 			;;
 		(-*)
-			die "unknown option: $1" 2
+			parse_git_message_option "$@" || die "unknown option: $1" 2
+			consumed="$REPLY"
+			shift "$consumed"
 			;;
 		(*)
 			die "unexpected argument: $1" 2
@@ -253,127 +60,29 @@ do
 	esac
 done
 
-require_command git
-require_command ollama
-
-[[ "$max_diff_lines" == <-> ]] || die "invalid value for LLM_TOOLS_MAX_DIFF_LINES: $max_diff_lines" 2
-[[ "$name_only_lines" == <-> ]] || die "invalid value for LLM_TOOLS_NAME_ONLY_LINES: $name_only_lines" 2
-
-for parameter in "${ollama_parameters[@]}"
-do
-	[[ "$parameter" == *=* ]] || die "invalid Ollama parameter: $parameter" 2
-	key="${parameter%%=*}"
-	value="${parameter#*=}"
-	[[ "$key" == [A-Za-z_][A-Za-z0-9_]* ]] || die "invalid Ollama parameter name: $key" 2
-	[[ -n "$value" ]] || die "missing value for Ollama parameter: $key" 2
-done
+validate_git_message_options
 
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 || {
 	die "commit-msg: not inside a git repository"
 }
 
-name_only="$(git diff --cached --name-only)"
-
-if [[ -z "$name_only" ]]
-then
-	print -ru2 -- "commit-msg: no staged changes"
-	print -ru2 -- "hint: run git add -p or git add <file> first"
-	exit 1
-fi
-
-numstat="$(git diff --cached --numstat)"
-changed_lines=0
-binary_files=0
-
-while IFS=$'\t' read -r added deleted path_field
-do
-	[[ -n "${added:-}${deleted:-}" ]] || continue
-
-	if [[ "$added" == <-> ]]
-	then
-		changed_lines=$(( changed_lines + added ))
-	else
-		binary_files=$(( binary_files + 1 ))
-	fi
-
-	if [[ "$deleted" == <-> ]]
-	then
-		changed_lines=$(( changed_lines + deleted ))
-	fi
-done <<< "$numstat"
-
-name_only_mode=0
-if (( ! full_diff && name_only_lines > 0 && changed_lines > name_only_lines ))
-then
-	name_only_mode=1
-fi
-
-if (( name_only_mode ))
-then
-	diff_mode="name-only"
-else
-	diff_mode="diff"
-fi
-
-if (( name_only_mode ))
-then
-	staged_files="$name_only"
-	stat="(skipped: large staged diff; using file names only)"
-	truncated=1
-	diff_line_limit="name-only"
-	staged_diff=""
-elif (( full_diff ))
-then
-	staged_files="$(git diff --cached --name-status)"
-	stat="$(git diff --cached --stat)"
-	truncated=0
-	diff_line_limit="full"
-	staged_diff="$(git diff --cached --no-ext-diff --minimal)"
-elif (( max_diff_lines == 0 ))
-then
-	staged_files="$(git diff --cached --name-status)"
-	stat="$(git diff --cached --stat)"
-	truncated=1
-	diff_line_limit="$max_diff_lines"
-	staged_diff=""
-else
-	staged_files="$(git diff --cached --name-status)"
-	stat="$(git diff --cached --stat)"
-	diff_line_limit="$max_diff_lines"
-	sample_limit=$(( max_diff_lines + 1 ))
-	diff_sample="$(git diff --cached --no-ext-diff --minimal | sed -n "1,${sample_limit}p")"
-	if [[ -n "$diff_sample" ]]
-	then
-		sample_lines="$(print -- "$diff_sample" | wc -l | tr -d '[:space:]')"
-	else
-		sample_lines=0
-	fi
-
-	if (( sample_lines > max_diff_lines ))
-	then
-		truncated=1
-		staged_diff="$(print -- "$diff_sample" | sed -n "1,${max_diff_lines}p")"
-	else
-		truncated=0
-		staged_diff="$diff_sample"
-	fi
-fi
-
-if [[ -n "$staged_diff" ]]
-then
-	included_diff_lines="$(print -- "$staged_diff" | wc -l | tr -d '[:space:]')"
-else
-	included_diff_lines=0
-fi
+collect_git_diff_context \
+	"git diff --cached --name-only" \
+	"git diff --cached --numstat" \
+	"git diff --cached --name-status" \
+	"git diff --cached --stat" \
+	"git diff --cached --no-ext-diff --minimal" \
+	"commit-msg: no staged changes" \
+	"hint: run git add -p or git add <file> first"
 
 prompt="$(cat "$LLM_TOOLS_HOME/prompts/commit-msg.txt")"
 context="$(
 	cat <<EOF
 Staged files:
-$staged_files
+$changed_files
 
 Diff stat:
-$stat
+$diff_stat
 
 Diff mode: $diff_mode
 Changed lines estimate: $changed_lines
@@ -383,7 +92,7 @@ Diff lines included: $included_diff_lines
 Diff line limit: $diff_line_limit
 
 Staged diff:
-$staged_diff
+$git_diff
 EOF
 )"
 
@@ -412,32 +121,9 @@ $context
 EOF
 }
 
-run_commit_model () {
-	local model="$1"
-	local parameter key value
-	typeset -a parameter_commands
-
-	for parameter in "${ollama_parameters[@]}"
-	do
-		key="${parameter%%=*}"
-		value="${parameter#*=}"
-		parameter_commands+=( "/set parameter $key $value" )
-	done
-
-	if (( ${#parameter_commands[@]} > 0 ))
-	then
-		{
-			printf "%s\n" "${parameter_commands[@]}"
-			cat
-		} | run_ollama "$model"
-	else
-		run_ollama "$model"
-	fi
-}
-
 output="$(
 	printf "%s\n\n%s\n" "$prompt" "$context" |
-		run_commit_model "$model"
+		run_git_message_model "$model"
 )"
 
 if (( debug ))
@@ -455,7 +141,7 @@ then
 else
 	repair_output="$(
 		repair_invalid_output "$output" |
-			run_commit_model "$model"
+			run_git_message_model "$model"
 	)"
 
 	if (( debug ))
@@ -483,7 +169,7 @@ else
 	retry_output="$(
 		printf "%s\n\nThe previous outputs were invalid:\n%s\n\n%s\n\n%s\n" \
 			"$prompt" "$output" "$repair_output" "$context" |
-			run_commit_model "$model"
+			run_git_message_model "$model"
 	)"
 
 	if (( debug ))

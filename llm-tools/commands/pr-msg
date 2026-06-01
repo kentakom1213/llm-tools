@@ -1,0 +1,275 @@
+#!/usr/bin/env zsh
+set -euo pipefail
+
+script_dir="${0:A:h}"
+LLM_TOOLS_HOME="${LLM_TOOLS_HOME:-${script_dir:h}}"
+source "$LLM_TOOLS_HOME/lib/common.zsh"
+source "$LLM_TOOLS_HOME/lib/git-message.zsh"
+
+command_name="pr-msg"
+base_ref=""
+load_git_message_config "$command_name" "$config_file"
+apply_git_message_env
+
+usage () {
+	cat <<'EOF'
+Usage:
+  llm-tools pr-msg [--base REF] [-m MODEL] [--temperature N] [--top-p N] [--top-k N] [--seed N] [--num-ctx N] [--ollama-parameter KEY=VALUE] [--max-diff-lines N] [--name-only-lines N] [--full-diff] [--retry] [--debug]
+
+Options:
+  --base REF             compare changes against REF; defaults to origin/HEAD, origin/main, main, origin/master, then master
+  -m, --model MODEL      set Ollama model
+  --temperature N        set Ollama temperature parameter
+  --top-p N              set Ollama top_p parameter
+  --top-k N              set Ollama top_k parameter
+  --seed N               set Ollama seed parameter
+  --num-ctx N            set Ollama num_ctx parameter
+  --ollama-parameter KEY=VALUE
+                         set an arbitrary Ollama model parameter
+  --max-diff-lines N     limit diff lines sent to Ollama
+  --name-only-lines N    use file names only when changed lines exceed N; 0 disables
+  --full-diff            send the full diff
+  --retry                retry once when automatic repair also fails
+  --debug                print raw model output to stderr
+  --version              show version
+  -h, --help             show this help
+EOF
+}
+
+while (( $# > 0 ))
+do
+	case "${1:-}" in
+		(--base)
+			shift
+			(( $# > 0 )) || die "missing value for --base" 2
+			base_ref="$1"
+			shift
+			;;
+		(-h | --help)
+			usage
+			exit 0
+			;;
+		(--version)
+			llm_tools_version
+			exit 0
+			;;
+		(--)
+			shift
+			break
+			;;
+		(-*)
+			parse_git_message_option "$@" || die "unknown option: $1" 2
+			consumed="$REPLY"
+			shift "$consumed"
+			;;
+		(*)
+			die "unexpected argument: $1" 2
+			;;
+	esac
+done
+
+validate_git_message_options
+
+git rev-parse --is-inside-work-tree >/dev/null 2>&1 || {
+	die "pr-msg: not inside a git repository"
+}
+
+detect_base_ref () {
+	local origin_head
+
+	origin_head="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)"
+	if [[ -n "$origin_head" ]]
+	then
+		print -- "$origin_head"
+		return 0
+	fi
+
+	for candidate in origin/main main origin/master master
+	do
+		if git rev-parse --verify --quiet "$candidate^{commit}" >/dev/null
+		then
+			print -- "$candidate"
+			return 0
+		fi
+	done
+
+	return 1
+}
+
+if [[ -z "$base_ref" ]]
+then
+	base_ref="$(detect_base_ref)" || die "pr-msg: could not detect base ref; pass --base REF"
+fi
+
+git rev-parse --verify --quiet "$base_ref^{commit}" >/dev/null || {
+	die "pr-msg: invalid base ref: $base_ref" 2
+}
+
+merge_base="$(git merge-base "$base_ref" HEAD)" || {
+	die "pr-msg: could not find merge base with $base_ref"
+}
+
+head_ref="$(git rev-parse --abbrev-ref HEAD)"
+commit_log="$(git log --oneline --no-decorate "$merge_base..HEAD")"
+
+collect_git_diff_context \
+	"git diff $merge_base..HEAD --name-only" \
+	"git diff $merge_base..HEAD --numstat" \
+	"git diff $merge_base..HEAD --name-status" \
+	"git diff $merge_base..HEAD --stat" \
+	"git diff $merge_base..HEAD --no-ext-diff --minimal" \
+	"pr-msg: no changes against $base_ref"
+
+prompt="$(cat "$LLM_TOOLS_HOME/prompts/pr-msg.txt")"
+context="$(
+	cat <<EOF
+Base ref: $base_ref
+Head ref: $head_ref
+
+Commits:
+$commit_log
+
+Changed files:
+$changed_files
+
+Diff stat:
+$diff_stat
+
+Diff mode: $diff_mode
+Changed lines estimate: $changed_lines
+Binary files changed: $binary_files
+Diff truncated: $truncated
+Diff lines included: $included_diff_lines
+Diff line limit: $diff_line_limit
+
+Diff:
+$git_diff
+EOF
+)"
+
+extract_msg () {
+	awk '
+		{
+			gsub(/^[[:space:]]+|[[:space:]]+$/, "")
+			if ($0 == "```") {
+				next
+			}
+			lines[++count] = $0
+		}
+		END {
+			start = 0
+			for (i = 1; i < count; i++) {
+				if (lines[i] ~ /^Title: / && lines[i + 1] == "Body:") {
+					start = i
+				}
+			}
+			if (start == 0) {
+				exit
+			}
+			for (i = start; i <= count; i++) {
+				print lines[i]
+			}
+		}
+	'
+}
+
+is_valid_msg () {
+	local value="$1"
+
+	[[ "$value" == Title:\ *$'\n'Body:$'\n'* ]]
+}
+
+repair_invalid_output () {
+	local invalid_output="$1"
+
+	cat <<EOF
+The previous model output was invalid because it was not exactly one pull request title and body.
+
+Convert it into exactly this format:
+
+Title: <short title>
+Body:
+## Summary
+- <one change>
+
+## Testing
+- <test or "Not run (not shown in diff)">
+
+Return the pull request message and nothing else.
+
+Invalid output:
+$invalid_output
+
+$context
+EOF
+}
+
+output="$(
+	printf "%s\n\n%s\n" "$prompt" "$context" |
+		run_git_message_model "$model"
+)"
+
+if (( debug ))
+then
+	print -ru2 -- "----- raw ollama output -----"
+	print -ru2 -- "$output"
+	print -ru2 -- "-----------------------------"
+fi
+
+msg="$(print -- "$output" | extract_msg)"
+
+if is_valid_msg "$msg"
+then
+	print -- "$msg"
+else
+	repair_output="$(
+		repair_invalid_output "$output" |
+			run_git_message_model "$model"
+	)"
+
+	if (( debug ))
+	then
+		print -ru2 -- "----- repair ollama output -----"
+		print -ru2 -- "$repair_output"
+		print -ru2 -- "--------------------------------"
+	fi
+
+	msg="$(print -- "$repair_output" | extract_msg)"
+
+	if is_valid_msg "$msg"
+	then
+		print -- "$msg"
+		exit 0
+	fi
+
+	if (( ! retry ))
+	then
+		print -ru2 -- "pr-msg: model did not return a valid pull request message"
+		print -ru2 -- "hint: retry with --retry --debug to inspect and retry once more"
+		exit 1
+	fi
+
+	retry_output="$(
+		printf "%s\n\nThe previous outputs were invalid:\n%s\n\n%s\n\n%s\n" \
+			"$prompt" "$output" "$repair_output" "$context" |
+			run_git_message_model "$model"
+	)"
+
+	if (( debug ))
+	then
+		print -ru2 -- "----- retry ollama output -----"
+		print -ru2 -- "$retry_output"
+		print -ru2 -- "-------------------------------"
+	fi
+
+	msg="$(print -- "$retry_output" | extract_msg)"
+
+	if is_valid_msg "$msg"
+	then
+		print -- "$msg"
+	else
+		print -ru2 -- "pr-msg: model did not return a valid pull request message"
+		print -ru2 -- "hint: retry with --debug to inspect the raw output"
+		exit 1
+	fi
+fi

@@ -25,6 +25,7 @@ llm-tools <subcommand> [args]
 ```console
 llm-tools files <file...>
 llm-tools commit-msg
+llm-tools pr-msg
 ```
 
 バージョンは次のコマンドで確認できます，
@@ -109,6 +110,35 @@ repeat_penalty = 1.1
 feat, fix, docs, style, refactor, test, chore, build, ci, perf
 ```
 
+## `pr-msg`
+
+Git の現在のブランチと base ブランチの差分から，PR のタイトルと本文を生成します，
+
+```console
+llm-tools pr-msg
+llm-tools pr-msg --base origin/main
+```
+
+このサブコマンドは `git` と `ollama` を利用します，
+base は `origin/HEAD`，`origin/main`，`main`，`origin/master`，`master` の順に自動検出されます，
+検出結果を変えたい場合は `--base REF` を指定します，
+
+`commit-msg` と同じ Ollama 関連オプション，diff 制限オプション，`--retry`，`--debug` が利用できます，
+
+設定例，
+
+```toml
+[pr-msg]
+model = "gemma4:e2b"
+max_diff_lines = 300
+name_only_lines = 3000
+temperature = 0
+top_p = 0.2
+
+[pr-msg.parameters]
+repeat_penalty = 1.1
+```
+
 ## 環境変数
 
 | 変数 | 説明 |
@@ -116,7 +146,8 @@ feat, fix, docs, style, refactor, test, chore, build, ci, perf
 | `LLM_TOOLS_HOME` | `llm-tools` 本体のディレクトリを上書きします |
 | `LLM_TOOLS_CONFIG` | `llm-tools` の TOML 設定ファイルを上書きします |
 | `OLLAMA_MODEL` | `commit-msg` で利用する既定の Ollama モデルを上書きします |
-| `LLM_TOOLS_MAX_DIFF_LINES` | `commit-msg` で Ollama に渡す staged diff の既定最大行数を上書きします |
+| `LLM_TOOLS_MAX_DIFF_LINES` | `commit-msg` / `pr-msg` で Ollama に渡す diff の既定最大行数を上書きします |
+| `LLM_TOOLS_NAME_ONLY_LINES` | `commit-msg` / `pr-msg` でファイル名のみへ切り替える変更行数を上書きします |
 
 ## ライセンス
 

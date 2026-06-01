@@ -16,6 +16,7 @@ Usage:
 Subcommands:
   files <file...>
   commit-msg
+  pr-msg
 EOF
 	}
 
