@@ -9,11 +9,19 @@ Return exactly a pull request title and body in this format:
 Title: <short title>
 Body:
 ## Summary
-- <one change>
-- <one change>
+- <primary change>
+
+## Changed Areas
+- <area>: <what changed>
+
+## User-visible Impact
+- <impact or "None apparent from diff">
 
 ## Testing
 - <test or "Not run (not shown in diff)">
+
+## Risks / Notes
+- <risk/note or "None apparent from diff">
 
 Do not explain.
 Do not use Markdown fences.

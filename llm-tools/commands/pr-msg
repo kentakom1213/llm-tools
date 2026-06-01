@@ -161,16 +161,28 @@ extract_msg () {
 			lines[++count] = $0
 		}
 		END {
-			start = 0
-			for (i = 1; i < count; i++) {
-				if (lines[i] ~ /^Title: / && lines[i + 1] == "Body:") {
-					start = i
+			title = 0
+			body = 0
+			for (i = 1; i <= count; i++) {
+				if (lines[i] ~ /^Title: /) {
+					for (j = i + 1; j <= count; j++) {
+						if (lines[j] == "") {
+							continue
+						}
+						if (lines[j] == "Body:") {
+							title = i
+							body = j
+						}
+						break
+					}
 				}
 			}
-			if (start == 0) {
+			if (title == 0 || body == 0) {
 				exit
 			}
-			for (i = start; i <= count; i++) {
+			print lines[title]
+			print "Body:"
+			for (i = body + 1; i <= count; i++) {
 				print lines[i]
 			}
 		}
@@ -199,10 +211,19 @@ OUTPUT FORMAT:
 Title: <short title>
 Body:
 ## Summary
-- <one change>
+- <primary change>
+
+## Changed Areas
+- <area>: <what changed>
+
+## User-visible Impact
+- <impact or "None apparent from diff">
 
 ## Testing
 - <test or "Not run (not shown in diff)">
+
+## Risks / Notes
+- <risk/note or "None apparent from diff">
 
 FINAL INSTRUCTION:
 Return exactly one pull request title and body in the output format and nothing else.

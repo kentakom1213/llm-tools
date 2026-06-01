@@ -132,6 +132,8 @@ base は `origin/HEAD`，`origin/main`，`main`，`origin/master`，`master` の
 
 `commit-msg` と同じ Ollama 関連オプション，diff 制限オプション，`--retry`，`--debug` が利用できます，
 
+生成される本文には，概要，変更箇所，ユーザー影響，テスト，リスク/補足が含まれます，
+
 設定例，
 
 ```toml

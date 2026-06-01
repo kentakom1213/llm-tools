@@ -560,11 +560,19 @@ OUTPUT FORMAT:
 Title: <short title>
 Body:
 ## Summary
-- <one change>
-- <one change>
+- <primary change>
+
+## Changed Areas
+- <area>: <what changed>
+
+## User-visible Impact
+- <impact or "None apparent from diff">
 
 ## Testing
 - <test or "Not run (not shown in diff)">
+
+## Risks / Notes
+- <risk/note or "None apparent from diff">
 
 FINAL INSTRUCTION:
 Return exactly one pull request title and body in the output format and nothing else.
