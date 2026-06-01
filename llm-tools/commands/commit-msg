@@ -13,7 +13,7 @@ apply_git_message_env
 usage () {
 	cat <<'EOF'
 Usage:
-  llm-tools commit-msg [-m MODEL] [--temperature N] [--top-p N] [--top-k N] [--seed N] [--num-ctx N] [--ollama-parameter KEY=VALUE] [--max-diff-lines N] [--large-change-lines N] [--huge-change-lines N] [--huge-change-files N] [--full-diff] [--retry] [--debug]
+  llm-tools commit-msg [-m MODEL] [--temperature N] [--top-p N] [--top-k N] [--seed N] [--num-ctx N] [--ollama-parameter KEY=VALUE] [--max-diff-lines N] [--large-change-lines N] [--huge-change-lines N] [--huge-change-files N] [--diff-path PATHSPEC] [--full-diff] [--retry] [--debug]
 
 Options:
   -m, --model MODEL       set Ollama model
@@ -28,6 +28,7 @@ Options:
   --large-change-lines N  use two-stage generation when changed lines exceed N
   --huge-change-lines N   use deterministic huge summary when changed lines exceed N
   --huge-change-files N   use deterministic huge summary when changed files exceed N
+  --diff-path PATHSPEC    include only this Git pathspec in the diff body; repeatable
   --full-diff             send the full staged diff
   --retry                 retry once when automatic repair also fails
   --debug                 print raw model output to stderr
@@ -88,6 +89,8 @@ Diff stat:
 $diff_stat
 
 Diff mode: $diff_mode
+Tracked diff paths: $(format_tracked_diff_paths)
+Ignored diff extensions: $(format_ignored_diff_extensions)
 Changed lines estimate: $changed_lines
 Binary files changed: $binary_files
 Diff truncated: $truncated

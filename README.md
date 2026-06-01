@@ -78,6 +78,7 @@ llm-tools commit-msg
 | `--large-change-lines N` | 二段階生成に切り替える変更行数を指定します |
 | `--huge-change-lines N` | 巨大変更の機械要約に切り替える変更行数を指定します |
 | `--huge-change-files N` | 巨大変更の機械要約に切り替える変更ファイル数を指定します |
+| `--diff-path PATHSPEC` | Ollama に渡す diff 本文を Git pathspec で絞ります，複数指定できます |
 | `--full-diff` | staged diff 全体を Ollama に渡します |
 | `--retry` | 自動整形も失敗した場合に 1 回だけ追加で再試行します |
 | `--debug` | モデルの生出力を stderr に表示します |
@@ -88,6 +89,7 @@ llm-tools commit-msg
 llm-tools commit-msg --model qwen2.5-coder:7b --max-diff-lines 200
 llm-tools commit-msg --temperature 0 --top-p 0.2 --seed 1
 llm-tools commit-msg --ollama-parameter repeat_penalty=1.1
+llm-tools commit-msg --diff-path src/ --diff-path ':(glob)docs/**/*.md'
 ```
 
 設定例，
@@ -99,6 +101,8 @@ max_diff_lines = 120
 large_change_lines = 800
 huge_change_lines = 3000
 huge_change_files = 300
+tracked_diff_paths = ["src/", "docs/"]
+ignored_diff_extensions = ["png", "jpg", "jpeg", "gif", "webp", "pdf", "zip", "mp4", "mov", "ttf", "woff2"]
 temperature = 0
 seed = 1
 num_ctx = 8192
@@ -110,6 +114,12 @@ repeat_penalty = 1.1
 `[commit-msg].model` は必須です，
 ただし `OLLAMA_MODEL` を指定した場合は設定ファイルの `model` を省略できます，
 設定値は `組み込み既定値 < TOML < 環境変数 < CLI 引数` の順に上書きされます，
+
+`tracked_diff_paths` は Ollama に渡す diff 本文を Git pathspec で絞ります，
+未指定の場合は全ファイルが対象です，
+`ignored_diff_extensions` は指定拡張子のファイル内容を diff 本文から除外し，ファイル名，stat，変更行数の推定だけを残します，
+画像，PDF，圧縮ファイル，音声/動画，フォントなどの代表的なバイナリ拡張子は既定で除外されます，
+既定の除外を無効化する場合は `ignored_diff_extensions = []` を指定します，
 
 生成されるメッセージの type は，次のいずれかです，
 
@@ -130,7 +140,7 @@ llm-tools pr-msg --base origin/main
 base は `origin/HEAD`，`origin/main`，`main`，`origin/master`，`master` の順に自動検出されます，
 検出結果を変えたい場合は `--base REF` を指定します，
 
-`commit-msg` と同じ Ollama 関連オプション，diff 制限オプション，`--retry`，`--debug` が利用できます，
+`commit-msg` と同じ Ollama 関連オプション，diff 制限オプション，`--diff-path`，`--retry`，`--debug` が利用できます，
 
 生成される本文には，概要，変更箇所，ユーザー影響，テスト，リスク/補足が含まれます，
 
@@ -143,6 +153,8 @@ max_diff_lines = 300
 large_change_lines = 1000
 huge_change_lines = 5000
 huge_change_files = 500
+tracked_diff_paths = ["src/", "docs/"]
+ignored_diff_extensions = ["png", "jpg", "jpeg", "gif", "webp", "pdf", "zip", "mp4", "mov", "ttf", "woff2"]
 temperature = 0
 seed = 1
 num_ctx = 8192

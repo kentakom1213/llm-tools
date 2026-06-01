@@ -10,6 +10,16 @@ typeset -g binary_huge_files=50
 typeset -g full_diff=0
 typeset -g retry=0
 typeset -ga ollama_parameters
+typeset -ga tracked_diff_paths
+typeset -ga ignored_diff_extensions=(
+	png jpg jpeg gif webp avif ico icns bmp tif tiff
+	pdf
+	zip gz tgz bz2 xz 7z rar tar jar war
+	mp3 wav flac ogg m4a mp4 mov avi webm mkv
+	ttf otf woff woff2 eot
+	psd ai sketch fig
+	exe dll so dylib class pyc pyo
+)
 
 trim_value () {
 	local value="$1"
@@ -73,6 +83,24 @@ unquote_toml_value () {
 	print -r -- "$value"
 }
 
+parse_toml_string_array () {
+	local value="$1"
+	local item
+
+	value="$(trim_value "$value")"
+	[[ "$value" == \[*\] ]] || return 1
+
+	value="${value[2,-2]}"
+	[[ -n "$(trim_value "$value")" ]] || return 0
+
+	for item in ${(s:,:)value}
+	do
+		item="$(trim_value "$item")"
+		[[ -n "$item" ]] || continue
+		print -r -- "$(unquote_toml_value "$item")"
+	done
+}
+
 load_git_message_config () {
 	local command_name="$1"
 	local file="$2"
@@ -114,6 +142,12 @@ load_git_message_config () {
 				;;
 			(${command_name}:huge_change_files | ${command_name}:huge-change-files)
 				huge_change_files="$value"
+				;;
+			(${command_name}:ignored_diff_extensions | ${command_name}:ignored-diff-extensions)
+				ignored_diff_extensions=( ${(f)"$(parse_toml_string_array "$value")"} )
+				;;
+			(${command_name}:tracked_diff_paths | ${command_name}:tracked-diff-paths)
+				tracked_diff_paths=( ${(f)"$(parse_toml_string_array "$value")"} )
 				;;
 			(${command_name}:temperature)
 				ollama_parameters+=( "temperature=$value" )
@@ -234,6 +268,12 @@ parse_git_message_option () {
 			REPLY=2
 			return 0
 			;;
+		(--diff-path)
+			(( $# >= 2 )) || die "missing value for --diff-path" 2
+			tracked_diff_paths+=( "$2" )
+			REPLY=2
+			return 0
+			;;
 		(--full-diff)
 			full_diff=1
 			REPLY=1
@@ -255,7 +295,7 @@ parse_git_message_option () {
 }
 
 validate_git_message_options () {
-	local parameter key value
+	local parameter key value extension pathspec
 
 	require_command git
 	require_command ollama
@@ -265,6 +305,17 @@ validate_git_message_options () {
 	[[ "$large_change_lines" == <-> ]] || die "invalid value for large_change_lines: $large_change_lines" 2
 	[[ "$huge_change_lines" == <-> ]] || die "invalid value for huge_change_lines: $huge_change_lines" 2
 	[[ "$huge_change_files" == <-> ]] || die "invalid value for huge_change_files: $huge_change_files" 2
+
+	for extension in "${ignored_diff_extensions[@]}"
+	do
+		[[ -n "$extension" ]] || die "invalid ignored_diff_extensions entry: empty value" 2
+		[[ "$extension" != */* && "$extension" != *\\* ]] || die "invalid ignored_diff_extensions entry: $extension" 2
+	done
+
+	for pathspec in "${tracked_diff_paths[@]}"
+	do
+		[[ -n "$pathspec" ]] || die "invalid tracked_diff_paths entry: empty value" 2
+	done
 
 	for parameter in "${ollama_parameters[@]}"
 	do
@@ -302,6 +353,72 @@ classify_change_size () {
 	else
 		print -- "normal"
 	fi
+}
+
+format_ignored_diff_extensions () {
+	local extension
+	typeset -a normalized_extensions
+
+	if (( ${#ignored_diff_extensions[@]} == 0 ))
+	then
+		print -- "(none)"
+		return 0
+	fi
+
+	for extension in "${ignored_diff_extensions[@]}"
+	do
+		extension="${extension#.}"
+		normalized_extensions+=( "$extension" )
+	done
+
+	normalized_extensions=( ${(u)normalized_extensions} )
+	print -r -- "${(j:, :)normalized_extensions}"
+}
+
+format_tracked_diff_paths () {
+	local pathspec
+	typeset -a pathspecs
+
+	if (( ${#tracked_diff_paths[@]} == 0 ))
+	then
+		print -- "(all)"
+		return 0
+	fi
+
+	for pathspec in "${tracked_diff_paths[@]}"
+	do
+		pathspecs+=( "$pathspec" )
+	done
+
+	print -r -- "${(j:, :)pathspecs}"
+}
+
+with_diff_pathspecs () {
+	local command="$1"
+	local extension pathspec
+
+	if (( ${#tracked_diff_paths[@]} == 0 && ${#ignored_diff_extensions[@]} == 0 ))
+	then
+		print -r -- "$command"
+		return 0
+	fi
+
+	command+=" --"
+
+	for pathspec in "${tracked_diff_paths[@]}"
+	do
+		command+=" ${(q)pathspec}"
+	done
+
+	for extension in "${ignored_diff_extensions[@]}"
+	do
+		extension="${extension#.}"
+		[[ -n "$extension" ]] || continue
+		pathspec=":(exclude,icase)*.$extension"
+		command+=" ${(q)pathspec}"
+	done
+
+	print -r -- "$command"
 }
 
 changed_file_path () {
@@ -591,6 +708,7 @@ collect_git_diff_context () {
 	local empty_message="$6"
 	local empty_hint="${7:-}"
 	local name_only numstat added deleted path_field sample_limit sample_lines diff_sample
+	local filtered_diff_command
 
 	name_only="$(eval "$files_command")"
 
@@ -643,7 +761,8 @@ collect_git_diff_context () {
 		diff_stat="$(eval "$stat_command")"
 		truncated=0
 		diff_line_limit="full"
-		git_diff="$(eval "$diff_command")"
+		filtered_diff_command="$(with_diff_pathspecs "$diff_command")"
+		git_diff="$(eval "$filtered_diff_command")"
 	elif (( max_diff_lines == 0 ))
 	then
 		diff_mode="diff"
@@ -658,7 +777,8 @@ collect_git_diff_context () {
 		diff_stat="$(eval "$stat_command")"
 		diff_line_limit="$max_diff_lines"
 		sample_limit=$(( max_diff_lines + 1 ))
-		diff_sample="$(eval "$diff_command" | sed -n "1,${sample_limit}p")"
+		filtered_diff_command="$(with_diff_pathspecs "$diff_command")"
+		diff_sample="$(eval "$filtered_diff_command" | sed -n "1,${sample_limit}p")"
 		if [[ -n "$diff_sample" ]]
 		then
 			sample_lines="$(print -- "$diff_sample" | wc -l | tr -d '[:space:]')"

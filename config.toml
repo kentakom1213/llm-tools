@@ -4,6 +4,7 @@ max_diff_lines = 120
 large_change_lines = 800
 huge_change_lines = 3000
 huge_change_files = 300
+ignored_diff_extensions = ["png", "jpg", "jpeg", "gif", "webp", "pdf", "zip", "mp4", "mov", "ttf", "woff2", "svg", "ipe"]
 temperature = 0
 seed = 1
 num_ctx = 8192
