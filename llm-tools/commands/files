@@ -1,0 +1,71 @@
+#!/usr/bin/env zsh
+set -euo pipefail
+
+script_dir="${0:A:h}"
+LLM_TOOLS_HOME="${LLM_TOOLS_HOME:-${script_dir:h}}"
+source "$LLM_TOOLS_HOME/lib/common.zsh"
+
+separator="====="
+
+usage () {
+	cat <<'EOF'
+Usage:
+  llm-tools files [-s SEP] <file...>
+
+Options:
+  -s, --separator SEP   set section separator
+  --version             show version
+  -h, --help            show this help
+EOF
+}
+
+while (( $# > 0 ))
+do
+	case "${1:-}" in
+		(-s | --separator)
+			shift
+			(( $# > 0 )) || die "missing value for --separator" 2
+			separator="$1"
+			shift
+			;;
+		(-h | --help)
+			usage
+			exit 0
+			;;
+		(--version)
+			llm_tools_version
+			exit 0
+			;;
+		(--)
+			shift
+			break
+			;;
+		(-*)
+			die "unknown option: $1" 2
+			;;
+		(*)
+			break
+			;;
+	esac
+done
+
+(( $# > 0 )) || die "files: at least one file required" 1
+
+section () {
+	print -- "${separator} $1 ${separator}"
+}
+
+for file in "$@"
+do
+	if [[ -f "$file" ]]
+	then
+		section "FILE: $file"
+		print -- '```'
+		cat -- "$file"
+		print -- '```'
+		print
+	else
+		section "MISSING: $file"
+		print
+	fi
+done

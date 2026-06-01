@@ -1,0 +1,208 @@
+#!/usr/bin/env zsh
+set -euo pipefail
+
+script_dir="${0:A:h}"
+LLM_TOOLS_HOME="${LLM_TOOLS_HOME:-${script_dir:h}}"
+source "$LLM_TOOLS_HOME/lib/common.zsh"
+
+model="${OLLAMA_MODEL:-gemma4:e4b}"
+debug=0
+max_diff_lines="${LLM_TOOLS_MAX_DIFF_LINES:-120}"
+full_diff=0
+retry=0
+
+usage () {
+	cat <<'EOF'
+Usage:
+  llm-tools commit-msg [-m MODEL] [--max-diff-lines N] [--full-diff] [--retry] [--debug]
+
+Options:
+  -m, --model MODEL       set Ollama model
+  --max-diff-lines N      limit staged diff lines sent to Ollama
+  --full-diff             send the full staged diff
+  --retry                 retry once when model output is invalid
+  --debug                 print raw model output to stderr
+  --version               show version
+  -h, --help              show this help
+EOF
+}
+
+while (( $# > 0 ))
+do
+	case "${1:-}" in
+		(-m | --model)
+			shift
+			(( $# > 0 )) || die "missing value for --model" 2
+			model="$1"
+			shift
+			;;
+		(--max-diff-lines)
+			shift
+			(( $# > 0 )) || die "missing value for --max-diff-lines" 2
+			[[ "$1" == <-> ]] || die "invalid value for --max-diff-lines: $1" 2
+			max_diff_lines="$1"
+			shift
+			;;
+		(--full-diff)
+			full_diff=1
+			shift
+			;;
+		(--retry)
+			retry=1
+			shift
+			;;
+		(--debug)
+			debug=1
+			shift
+			;;
+		(-h | --help)
+			usage
+			exit 0
+			;;
+		(--version)
+			llm_tools_version
+			exit 0
+			;;
+		(--)
+			shift
+			break
+			;;
+		(-*)
+			die "unknown option: $1" 2
+			;;
+		(*)
+			die "unexpected argument: $1" 2
+			;;
+	esac
+done
+
+require_command git
+require_command ollama
+
+git rev-parse --is-inside-work-tree >/dev/null 2>&1 || {
+	die "commit-msg: not inside a git repository"
+}
+
+name_status="$(git diff --cached --name-status)"
+
+if [[ -z "$name_status" ]]
+then
+	print -ru2 -- "commit-msg: no staged changes"
+	print -ru2 -- "hint: run git add -p or git add <file> first"
+	exit 1
+fi
+
+stat="$(git diff --cached --stat)"
+
+if (( full_diff ))
+then
+	truncated=0
+	diff_line_limit="full"
+	staged_diff="$(git diff --cached --no-ext-diff --minimal)"
+elif (( max_diff_lines == 0 ))
+then
+	truncated=1
+	diff_line_limit="$max_diff_lines"
+	staged_diff=""
+else
+	diff_line_limit="$max_diff_lines"
+	sample_limit=$(( max_diff_lines + 1 ))
+	diff_sample="$(git diff --cached --no-ext-diff --minimal | sed -n "1,${sample_limit}p")"
+	if [[ -n "$diff_sample" ]]
+	then
+		sample_lines="$(print -- "$diff_sample" | wc -l | tr -d '[:space:]')"
+	else
+		sample_lines=0
+	fi
+
+	if (( sample_lines > max_diff_lines ))
+	then
+		truncated=1
+		staged_diff="$(print -- "$diff_sample" | sed -n "1,${max_diff_lines}p")"
+	else
+		truncated=0
+		staged_diff="$diff_sample"
+	fi
+fi
+
+if [[ -n "$staged_diff" ]]
+then
+	included_diff_lines="$(print -- "$staged_diff" | wc -l | tr -d '[:space:]')"
+else
+	included_diff_lines=0
+fi
+
+prompt="$(cat "$LLM_TOOLS_HOME/prompts/commit-msg.txt")"
+context="$(
+	cat <<EOF
+Staged files:
+$name_status
+
+Diff stat:
+$stat
+
+Diff truncated: $truncated
+Diff lines included: $included_diff_lines
+Diff line limit: $diff_line_limit
+
+Staged diff:
+$staged_diff
+EOF
+)"
+
+extract_msg () {
+	sed 's/^[[:space:]]*//; s/[[:space:]]*$//' |
+		sed '/^$/d' |
+		sed -nE '/^(feat|fix|docs|style|refactor|test|chore|build|ci|perf)(\([^)]+\))?: .+/p' |
+		head -n 1
+}
+
+output="$(
+	printf "%s\n\n%s\n" "$prompt" "$context" |
+		run_ollama "$model"
+)"
+
+if (( debug ))
+then
+	print -ru2 -- "----- raw ollama output -----"
+	print -ru2 -- "$output"
+	print -ru2 -- "-----------------------------"
+fi
+
+msg="$(print -- "$output" | extract_msg)"
+
+if [[ -n "$msg" ]]
+then
+	print -- "$msg"
+else
+	if (( ! retry ))
+	then
+		print -ru2 -- "commit-msg: model did not return a valid commit message"
+		print -ru2 -- "hint: retry with --retry --debug to inspect and retry once"
+		exit 1
+	fi
+
+	retry_output="$(
+		printf "%s\n\nThe previous output was invalid:\n%s\n\n%s\n" \
+			"$prompt" "$output" "$context" |
+			run_ollama "$model"
+	)"
+
+	if (( debug ))
+	then
+		print -ru2 -- "----- retry ollama output -----"
+		print -ru2 -- "$retry_output"
+		print -ru2 -- "-------------------------------"
+	fi
+
+	msg="$(print -- "$retry_output" | extract_msg)"
+
+	if [[ -n "$msg" ]]
+	then
+		print -- "$msg"
+	else
+		print -ru2 -- "commit-msg: model did not return a valid commit message"
+		print -ru2 -- "hint: retry with --debug to inspect the raw output"
+		exit 1
+	fi
+fi
