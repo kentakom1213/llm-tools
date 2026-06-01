@@ -68,7 +68,7 @@ llm-tools commit-msg
 | `-m, --model MODEL` | 利用する Ollama モデルを指定します |
 | `--max-diff-lines N` | Ollama に渡す staged diff の最大行数を指定します |
 | `--full-diff` | staged diff 全体を Ollama に渡します |
-| `--retry` | モデル出力が不正な場合に 1 回だけ再試行します |
+| `--retry` | 自動整形も失敗した場合に 1 回だけ追加で再試行します |
 | `--debug` | モデルの生出力を stderr に表示します |
 
 例，

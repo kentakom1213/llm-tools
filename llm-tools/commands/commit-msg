@@ -22,7 +22,7 @@ Options:
   --max-diff-lines N      limit staged diff lines sent to Ollama
   --name-only-lines N     use file names only when changed lines exceed N; 0 disables
   --full-diff             send the full staged diff
-  --retry                 retry once when model output is invalid
+  --retry                 retry once when automatic repair also fails
   --debug                 print raw model output to stderr
   --version               show version
   -h, --help              show this help
@@ -216,6 +216,24 @@ extract_msg () {
 		head -n 1
 }
 
+repair_invalid_output () {
+	local invalid_output="$1"
+
+	cat <<EOF
+The previous model output was invalid because it was not exactly one Conventional Commit message.
+
+Convert it into exactly one valid commit message.
+Use the git context only to resolve ambiguity.
+Return exactly one line and nothing else.
+The first token must be one of: feat, fix, docs, style, refactor, test, chore, build, ci, perf.
+
+Invalid output:
+$invalid_output
+
+$context
+EOF
+}
+
 output="$(
 	printf "%s\n\n%s\n" "$prompt" "$context" |
 		run_ollama "$model"
@@ -234,16 +252,36 @@ if [[ -n "$msg" ]]
 then
 	print -- "$msg"
 else
+	repair_output="$(
+		repair_invalid_output "$output" |
+			run_ollama "$model"
+	)"
+
+	if (( debug ))
+	then
+		print -ru2 -- "----- repair ollama output -----"
+		print -ru2 -- "$repair_output"
+		print -ru2 -- "--------------------------------"
+	fi
+
+	msg="$(print -- "$repair_output" | extract_msg)"
+
+	if [[ -n "$msg" ]]
+	then
+		print -- "$msg"
+		exit 0
+	fi
+
 	if (( ! retry ))
 	then
 		print -ru2 -- "commit-msg: model did not return a valid commit message"
-		print -ru2 -- "hint: retry with --retry --debug to inspect and retry once"
+		print -ru2 -- "hint: retry with --retry --debug to inspect and retry once more"
 		exit 1
 	fi
 
 	retry_output="$(
-		printf "%s\n\nThe previous output was invalid:\n%s\n\n%s\n" \
-			"$prompt" "$output" "$context" |
+		printf "%s\n\nThe previous outputs were invalid:\n%s\n\n%s\n\n%s\n" \
+			"$prompt" "$output" "$repair_output" "$context" |
 			run_ollama "$model"
 	)"
 
