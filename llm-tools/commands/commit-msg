@@ -8,17 +8,19 @@ source "$LLM_TOOLS_HOME/lib/common.zsh"
 model="${OLLAMA_MODEL:-gemma4:e4b}"
 debug=0
 max_diff_lines="${LLM_TOOLS_MAX_DIFF_LINES:-120}"
+name_only_lines="${LLM_TOOLS_NAME_ONLY_LINES:-2000}"
 full_diff=0
 retry=0
 
 usage () {
 	cat <<'EOF'
 Usage:
-  llm-tools commit-msg [-m MODEL] [--max-diff-lines N] [--full-diff] [--retry] [--debug]
+  llm-tools commit-msg [-m MODEL] [--max-diff-lines N] [--name-only-lines N] [--full-diff] [--retry] [--debug]
 
 Options:
   -m, --model MODEL       set Ollama model
   --max-diff-lines N      limit staged diff lines sent to Ollama
+  --name-only-lines N     use file names only when changed lines exceed N; 0 disables
   --full-diff             send the full staged diff
   --retry                 retry once when model output is invalid
   --debug                 print raw model output to stderr
@@ -41,6 +43,13 @@ do
 			(( $# > 0 )) || die "missing value for --max-diff-lines" 2
 			[[ "$1" == <-> ]] || die "invalid value for --max-diff-lines: $1" 2
 			max_diff_lines="$1"
+			shift
+			;;
+		(--name-only-lines)
+			shift
+			(( $# > 0 )) || die "missing value for --name-only-lines" 2
+			[[ "$1" == <-> ]] || die "invalid value for --name-only-lines: $1" 2
+			name_only_lines="$1"
 			shift
 			;;
 		(--full-diff)
@@ -79,32 +88,79 @@ done
 require_command git
 require_command ollama
 
+[[ "$name_only_lines" == <-> ]] || die "invalid value for LLM_TOOLS_NAME_ONLY_LINES: $name_only_lines" 2
+
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 || {
 	die "commit-msg: not inside a git repository"
 }
 
-name_status="$(git diff --cached --name-status)"
+name_only="$(git diff --cached --name-only)"
 
-if [[ -z "$name_status" ]]
+if [[ -z "$name_only" ]]
 then
 	print -ru2 -- "commit-msg: no staged changes"
 	print -ru2 -- "hint: run git add -p or git add <file> first"
 	exit 1
 fi
 
-stat="$(git diff --cached --stat)"
+numstat="$(git diff --cached --numstat)"
+changed_lines=0
+binary_files=0
 
-if (( full_diff ))
+while IFS=$'\t' read -r added deleted path_field
+do
+	[[ -n "${added:-}${deleted:-}" ]] || continue
+
+	if [[ "$added" == <-> ]]
+	then
+		changed_lines=$(( changed_lines + added ))
+	else
+		binary_files=$(( binary_files + 1 ))
+	fi
+
+	if [[ "$deleted" == <-> ]]
+	then
+		changed_lines=$(( changed_lines + deleted ))
+	fi
+done <<< "$numstat"
+
+name_only_mode=0
+if (( ! full_diff && name_only_lines > 0 && changed_lines > name_only_lines ))
 then
+	name_only_mode=1
+fi
+
+if (( name_only_mode ))
+then
+	diff_mode="name-only"
+else
+	diff_mode="diff"
+fi
+
+if (( name_only_mode ))
+then
+	staged_files="$name_only"
+	stat="(skipped: large staged diff; using file names only)"
+	truncated=1
+	diff_line_limit="name-only"
+	staged_diff=""
+elif (( full_diff ))
+then
+	staged_files="$(git diff --cached --name-status)"
+	stat="$(git diff --cached --stat)"
 	truncated=0
 	diff_line_limit="full"
 	staged_diff="$(git diff --cached --no-ext-diff --minimal)"
 elif (( max_diff_lines == 0 ))
 then
+	staged_files="$(git diff --cached --name-status)"
+	stat="$(git diff --cached --stat)"
 	truncated=1
 	diff_line_limit="$max_diff_lines"
 	staged_diff=""
 else
+	staged_files="$(git diff --cached --name-status)"
+	stat="$(git diff --cached --stat)"
 	diff_line_limit="$max_diff_lines"
 	sample_limit=$(( max_diff_lines + 1 ))
 	diff_sample="$(git diff --cached --no-ext-diff --minimal | sed -n "1,${sample_limit}p")"
@@ -136,11 +192,14 @@ prompt="$(cat "$LLM_TOOLS_HOME/prompts/commit-msg.txt")"
 context="$(
 	cat <<EOF
 Staged files:
-$name_status
+$staged_files
 
 Diff stat:
 $stat
 
+Diff mode: $diff_mode
+Changed lines estimate: $changed_lines
+Binary files changed: $binary_files
 Diff truncated: $truncated
 Diff lines included: $included_diff_lines
 Diff line limit: $diff_line_limit

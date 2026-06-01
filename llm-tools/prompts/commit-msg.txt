@@ -12,6 +12,7 @@ Do not end with a comma.
 Do not output a sentence about the changes.
 Use "Staged files" and "Diff stat" as the source of truth.
 The staged diff may be truncated.
+For large changes, diff stat and staged diff may be skipped; use staged file names.
 Prefer a good approximate commit message over explaining uncertainty.
 
 Format:
